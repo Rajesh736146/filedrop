@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>File Drop - Upload Test</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: system-ui, sans-serif; max-width: 600px; margin: 40px auto; padding: 20px; background: #1a1a2e; color: #eee; }
+        h1 { margin-bottom: 20px; color: #00d4ff; }
+        .upload-area { border: 2px dashed #444; border-radius: 12px; padding: 40px; text-align: center; cursor: pointer; transition: border-color 0.2s; }
+        .upload-area:hover { border-color: #00d4ff; }
+        .upload-area.dragover { border-color: #00d4ff; background: rgba(0, 212, 255, 0.05); }
+        input[type="file"] { display: none; }
+        .progress { margin-top: 20px; display: none; }
+        .progress-bar { width: 100%; height: 8px; background: #333; border-radius: 4px; overflow: hidden; }
+        .progress-fill { height: 100%; background: #00d4ff; width: 0%; transition: width 0.3s; }
+        .progress-text { margin-top: 8px; font-size: 14px; color: #aaa; }
+        .result { margin-top: 20px; padding: 16px; background: #16213e; border-radius: 8px; display: none; }
+        .result h3 { color: #00d4ff; margin-bottom: 10px; }
+        .result p { margin: 6px 0; font-size: 14px; word-break: break-all; }
+        .result a { color: #00d4ff; }
+        .error { color: #ff4757; }
+        .access-key { font-size: 24px; font-weight: bold; letter-spacing: 4px; color: #00d4ff; }
+        hr { border: none; border-top: 1px solid #333; margin: 30px 0; }
+        .download-section input { width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #444; background: #16213e; color: #eee; font-size: 16px; margin-top: 10px; }
+        .download-section button { margin-top: 10px; padding: 10px 20px; background: #00d4ff; color: #000; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
+        .download-result { margin-top: 15px; }
+    </style>
+</head>
+<body>
+    <h1>📁 File Drop</h1>
+
+    <div class="upload-area" id="dropArea">
+        <p>Drop a file here or click to select</p>
+        <p style="font-size: 12px; color: #666; margin-top: 8px;">Up to 500 MB</p>
+        <input type="file" id="fileInput">
+    </div>
+
+    <div class="progress" id="progress">
+        <div class="progress-bar"><div class="progress-fill" id="progressFill"></div></div>
+        <p class="progress-text" id="progressText">Uploading...</p>
+    </div>
+
+    <div class="result" id="result"></div>
+
+    <hr>
+
+    <div class="download-section">
+        <h3>Download a file</h3>
+        <input type="text" id="accessKeyInput" placeholder="Enter access key or UUID">
+        <button onclick="getFile()">Get File</button>
+        <div class="download-result" id="downloadResult"></div>
+    </div>
+
+    <script>
+        const API = 'https://filedrop-nine.vercel.app/api/files';
+        const CHUNK_SIZE = 5 * 1024 * 1024; // 5 MB
+
+        const dropArea = document.getElementById('dropArea');
+        const fileInput = document.getElementById('fileInput');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const result = document.getElementById('result');
+
+        // Drag & drop
+        dropArea.addEventListener('click', () => fileInput.click());
+        dropArea.addEventListener('dragover', (e) => { e.preventDefault(); dropArea.classList.add('dragover'); });
+        dropArea.addEventListener('dragleave', () => dropArea.classList.remove('dragover'));
+        dropArea.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropArea.classList.remove('dragover');
+            if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+        });
+        fileInput.addEventListener('change', (e) => { if (e.target.files.length) handleFile(e.target.files[0]); });
+
+        async function handleFile(file) {
+            if (file.size > 500 * 1024 * 1024) {
+                alert('File exceeds 500 MB limit');
+                return;
+            }
+
+            progress.style.display = 'block';
+            result.style.display = 'none';
+            progressFill.style.width = '0%';
+            progressText.textContent = `Uploading ${file.name} (${(file.size / 1024 / 1024).toFixed(1)} MB)...`;
+
+            try {
+                let response;
+                if (file.size <= CHUNK_SIZE) {
+                    response = await directUpload(file);
+                } else {
+                    response = await chunkedUpload(file);
+                }
+                showResult(response);
+            } catch (err) {
+                progressText.innerHTML = `<span class="error">Upload failed: ${err.message}</span>`;
+            }
+        }
+
+        async function directUpload(file) {
+            const formData = new FormData();
+            formData.append('file', file);
+
+            const resp = await fetch(`${API}/upload`, { method: 'POST', body: formData });
+            if (!resp.ok) throw new Error((await resp.json()).detail);
+
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Complete!';
+            return resp.json();
+        }
+
+        async function chunkedUpload(file) {
+            // Step 1: Initiate
+            progressText.textContent = 'Initiating upload...';
+            const initResp = await fetch(`${API}/upload/initiate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    file_name: file.name,
+                    file_size: file.size,
+                    content_type: file.type || 'application/octet-stream',
+                }),
+            });
+            if (!initResp.ok) throw new Error((await initResp.json()).detail);
+            const { upload_id, r2_key, part_urls, chunk_size } = await initResp.json();
+
+            // Step 2: Upload chunks
+            const parts = [];
+            for (let i = 0; i < part_urls.length; i++) {
+                const start = i * chunk_size;
+                const end = Math.min(start + chunk_size, file.size);
+                const chunk = file.slice(start, end);
+
+                const putResp = await fetch(part_urls[i], { method: 'PUT', body: chunk });
+                if (!putResp.ok) throw new Error(`Chunk ${i + 1} failed`);
+
+                const etag = putResp.headers.get('ETag') || '';
+                parts.push({ part_number: i + 1, etag: etag.replace(/"/g, '') });
+
+                const pct = Math.round(((i + 1) / part_urls.length) * 100);
+                progressFill.style.width = `${pct}%`;
+                progressText.textContent = `Uploading chunk ${i + 1}/${part_urls.length} (${pct}%)`;
+            }
+
+            // Step 3: Complete
+            progressText.textContent = 'Finalizing...';
+            const completeResp = await fetch(`${API}/upload/complete`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    upload_id,
+                    r2_key,
+                    file_name: file.name,
+                    file_size: file.size,
+                    content_type: file.type || 'application/octet-stream',
+                    parts,
+                }),
+            });
+            if (!completeResp.ok) throw new Error((await completeResp.json()).detail);
+
+            progressFill.style.width = '100%';
+            progressText.textContent = 'Complete!';
+            return completeResp.json();
+        }
+
+        function showResult(data) {
+            result.style.display = 'block';
+            result.innerHTML = `
+                <h3>✓ Upload Successful</h3>
+                <p class="access-key">${data.access_key}</p>
+                <p><strong>File:</strong> ${data.name}</p>
+                <p><strong>Size:</strong> ${(data.size / 1024 / 1024).toFixed(2)} MB</p>
+                <p><strong>Expires:</strong> ${new Date(data.expires_at).toLocaleString()}</p>
+                <p><a href="${data.download_url}" target="_blank">Download Link</a></p>
+            `;
+        }
+
+        async function getFile() {
+            const key = document.getElementById('accessKeyInput').value.trim();
+            if (!key) return;
+
+            const downloadResult = document.getElementById('downloadResult');
+            downloadResult.innerHTML = 'Loading...';
+
+            try {
+                const resp = await fetch(`${API}/${key}`);
+                if (!resp.ok) throw new Error((await resp.json()).detail);
+                const data = await resp.json();
+
+                downloadResult.innerHTML = `
+                    <p><strong>${data.name}</strong> (${(data.size / 1024 / 1024).toFixed(2)} MB)</p>
+                    <p>Expires: ${new Date(data.expires_at).toLocaleString()}</p>
+                    <p><a href="${data.download_url}" target="_blank" style="color:#00d4ff">⬇ Download</a></p>
+                `;
+            } catch (err) {
+                downloadResult.innerHTML = `<span class="error">${err.message}</span>`;
+            }
+        }
+    </script>
+</body>
+</html>
