@@ -1,9 +1,46 @@
 from fastapi import APIRouter, UploadFile, File
 from app.controllers import file_controller
-from app.schemas.file_schema import FileUploadResponse, DownloadFileResponse, StatsResponse, ErrorResponse
+from app.schemas.file_schema import (
+    UploadInitiateRequest,
+    UploadInitiateResponse,
+    UploadCompleteRequest,
+    FileUploadResponse,
+    DownloadFileResponse,
+    StatsResponse,
+    ErrorResponse,
+)
 from app.services import stats_service
 
 router = APIRouter()
+
+
+@router.post(
+    "/upload/initiate",
+    status_code=200,
+    response_model=UploadInitiateResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        413: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def initiate_upload(body: UploadInitiateRequest):
+    """Initiate a multipart upload. Returns presigned URLs for each chunk."""
+    return await file_controller.initiate_upload(body)
+
+
+@router.post(
+    "/upload/complete",
+    status_code=201,
+    response_model=FileUploadResponse,
+    responses={
+        400: {"model": ErrorResponse},
+        500: {"model": ErrorResponse},
+    },
+)
+async def complete_upload(body: UploadCompleteRequest):
+    """Complete a multipart upload after all chunks are uploaded to R2."""
+    return await file_controller.complete_upload(body)
 
 
 @router.post(
@@ -17,6 +54,7 @@ router = APIRouter()
     },
 )
 async def upload(file: UploadFile = File(...)):
+    """Direct upload for small files (< 5 MB)."""
     return await file_controller.upload(file)
 
 
